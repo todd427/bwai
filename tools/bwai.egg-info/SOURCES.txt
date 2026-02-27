@@ -1,0 +1,9 @@
+pyproject.toml
+bwai/__init__.py
+bwai/cli.py
+bwai.egg-info/PKG-INFO
+bwai.egg-info/SOURCES.txt
+bwai.egg-info/dependency_links.txt
+bwai.egg-info/entry_points.txt
+bwai.egg-info/requires.txt
+bwai.egg-info/top_level.txt

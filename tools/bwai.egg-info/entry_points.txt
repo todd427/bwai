@@ -1,0 +1,2 @@
+[console_scripts]
+bwai = bwai.cli:main

@@ -1,0 +1,61 @@
+{
+  "name": "BWAI",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12",
+
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "20"
+    },
+    "ghcr.io/devcontainers/features/git:1": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "python.terminal.activateEnvironment": true,
+        "editor.formatOnSave": true,
+        "editor.rulers": [88],
+        "files.trimTrailingWhitespace": true,
+        "terminal.integrated.defaultProfile.linux": "bash",
+        "[python]": {
+          "editor.defaultFormatter": "ms-python.black-formatter"
+        }
+      },
+      "extensions": [
+        "ms-python.python",
+        "ms-python.black-formatter",
+        "ms-python.pylint",
+        "ms-toolsai.jupyter",
+        "github.copilot",
+        "github.copilot-chat",
+        "humao.rest-client",
+        "redhat.vscode-yaml",
+        "streetsidesoftware.code-spell-checker",
+        "eamodio.gitlens"
+      ]
+    }
+  },
+
+  "postCreateCommand": "pip install -r requirements.txt && pip install -e tools/",
+
+  "forwardPorts": [8000, 5000, 3000],
+
+  "secrets": {
+    "ANTHROPIC_API_KEY": {
+      "description": "Your Anthropic API key from console.anthropic.com"
+    },
+    "ANSEO_API_TOKEN": {
+      "description": "Your Anseo API token from Settings → API Tokens on anseo.irish"
+    }
+  },
+
+  "containerEnv": {
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONUNBUFFERED": "1",
+    "ANSEO_URL": "https://anseo.irish"
+  },
+
+  "postStartCommand": "echo '\\n✅ Building With AI environment ready.\\nRun: bwai check-env\\n'"
+}
