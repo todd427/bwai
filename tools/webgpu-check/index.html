@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BWAI Local — WebGPU check</title>
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+  body { max-width: 720px; margin: 2rem auto; padding: 0 1rem; line-height: 1.45; }
+  h1 { font-size: 1.4rem; }
+  section { border: 1px solid #8884; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
+  h2 { font-size: 1.05rem; margin: 0 0 .5rem; }
+  button { font: inherit; padding: .5rem 1rem; border-radius: 6px; border: 1px solid #8886; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  pre, code { font-family: ui-monospace, monospace; font-size: .9rem; }
+  pre { white-space: pre-wrap; word-break: break-word; background: #8881; padding: .75rem; border-radius: 6px; min-height: 2.5rem; }
+  .ok { color: #16A085; } .bad { color: #C0392B; } .muted { color: #7F8C8D; }
+  progress { width: 100%; }
+  table { border-collapse: collapse; } td { padding: .15rem .75rem .15rem 0; }
+</style>
+</head>
+<body>
+<h1>BWAI Local — does your device run a model?</h1>
+<p class="muted">Three checks. Nothing leaves this device except the one-time model download from huggingface.co.</p>
+
+<section>
+  <h2>1. WebGPU</h2>
+  <pre id="gpu">checking…</pre>
+</section>
+
+<section>
+  <h2>2. Download the model</h2>
+  <p class="muted">LiquidAI/LFM2.5-350M-ONNX, Q4 — about 276 MB, once. Cached by the browser afterwards.</p>
+  <button id="load" disabled>Load model</button>
+  <progress id="bar" value="0" max="100" hidden></progress>
+  <pre id="loadlog">waiting for check 1</pre>
+</section>
+
+<section>
+  <h2>3. Generate</h2>
+  <button id="run" disabled>Run benchmark</button>
+  <pre id="out"></pre>
+  <table id="stats" hidden>
+    <tr><td>Time to first token</td><td id="ttft"></td></tr>
+    <tr><td>Tokens per second</td><td id="tps"></td></tr>
+    <tr><td>Total tokens</td><td id="ntok"></td></tr>
+    <tr><td>Wall time</td><td id="wall"></td></tr>
+  </table>
+  <p><button id="copy" disabled>Copy for Anseo</button> <span id="copied" class="ok"></span></p>
+  <p id="verdict" class="muted"></p>
+</section>
+
+<script type="module">
+import { AutoModelForCausalLM, AutoTokenizer, TextStreamer }
+  from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1";
+
+const MODEL_ID = "LiquidAI/LFM2.5-350M-ONNX";
+const DTYPE = "q4";
+const PROMPT = "In one sentence, what is the most important thing for a developer to understand about working with a small on-device language model?";
+const MAX_NEW_TOKENS = 160;
+
+const $ = (id) => document.getElementById(id);
+let adapterName = "unknown GPU";
+let tokenizer, model, lastResult;
+
+// ---- Check 1: WebGPU -------------------------------------------------------
+async function checkGpu() {
+  const el = $("gpu");
+  if (!navigator.gpu) {
+    el.innerHTML = '<span class="bad">WebGPU not available.</span>\nChrome/Edge desktop: enable chrome://flags/#enable-unsafe-webgpu and restart.\nAndroid: update Chrome. Safari/Firefox: use Chrome or Edge for this course.';
+    return false;
+  }
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) {
+    el.innerHTML = '<span class="bad">No WebGPU adapter.</span>\nCheck chrome://gpu for the WebGPU line.';
+    return false;
+  }
+  // adapter.info is the current API; requestAdapterInfo() is the older one.
+  let info = adapter.info;
+  if (!info && adapter.requestAdapterInfo) { try { info = await adapter.requestAdapterInfo(); } catch {} }
+  const bits = [info?.description, info?.device, info?.vendor, info?.architecture].filter(Boolean);
+  adapterName = bits.length ? bits.join(" / ") : "adapter (name hidden by browser)";
+  const lim = adapter.limits;
+  el.innerHTML =
+    `<span class="ok">WebGPU available.</span>\n` +
+    `adapter: ${adapterName}\n` +
+    `maxBufferSize: ${(lim.maxBufferSize / 2**20).toFixed(0)} MiB\n` +
+    `maxStorageBufferBindingSize: ${(lim.maxStorageBufferBindingSize / 2**20).toFixed(0)} MiB\n` +
+    `browser: ${browserLabel()}`;
+  return true;
+}
+
+function browserLabel() {
+  const ua = navigator.userAgent;
+  const m = ua.match(/(Edg|Chrome|Firefox|Safari)\/(\d+)/);
+  return m ? `${m[1] === "Edg" ? "Edge" : m[1]} ${m[2]}` : "unknown browser";
+}
+
+// ---- Check 2: download -----------------------------------------------------
+async function loadModel() {
+  $("load").disabled = true;
+  $("bar").hidden = false;
+  const log = $("loadlog");
+  const seen = {};
+  const progress = (p) => {
+    if (p.status === "progress" && p.file) {
+      seen[p.file] = p.progress ?? 0;
+      const files = Object.keys(seen);
+      const avg = files.reduce((s, f) => s + seen[f], 0) / files.length;
+      $("bar").value = avg;
+      log.textContent = `downloading ${files.length} file(s)… ${avg.toFixed(0)}%`;
+    } else if (p.status === "done" && p.file) {
+      log.textContent = `fetched ${p.file}`;
+    }
+  };
+  const t0 = performance.now();
+  try {
+    tokenizer = await AutoTokenizer.from_pretrained(MODEL_ID, { progress_callback: progress });
+    model = await AutoModelForCausalLM.from_pretrained(MODEL_ID, {
+      device: "webgpu",
+      dtype: DTYPE,
+      progress_callback: progress,
+    });
+    $("bar").value = 100;
+    log.innerHTML = `<span class="ok">model ready</span> in ${((performance.now() - t0) / 1000).toFixed(1)} s (first time includes the download; later loads come from cache)`;
+    $("run").disabled = false;
+  } catch (e) {
+    log.innerHTML = `<span class="bad">load failed:</span> ${e.message}\nCopy this and your Check 1 output into the Week 0 help thread.`;
+    console.error(e);
+    $("load").disabled = false;
+  }
+}
+
+// ---- Check 3: generate -----------------------------------------------------
+async function runBenchmark() {
+  $("run").disabled = true;
+  $("copy").disabled = true;
+  $("copied").textContent = "";
+  const out = $("out");
+  out.textContent = "";
+  $("stats").hidden = true;
+
+  const messages = [{ role: "user", content: PROMPT }];
+  const inputs = tokenizer.apply_chat_template(messages, { add_generation_prompt: true, return_dict: true });
+
+  let nTokens = 0, tFirst = 0;
+  const tStart = performance.now();
+  const streamer = new TextStreamer(tokenizer, {
+    skip_prompt: true,
+    skip_special_tokens: true,
+    callback_function: (text) => {
+      if (nTokens === 0) tFirst = performance.now();
+      nTokens += 1;
+      out.textContent += text;
+    },
+  });
+
+  try {
+    await model.generate({ ...inputs, max_new_tokens: MAX_NEW_TOKENS, do_sample: false, streamer });
+  } catch (e) {
+    out.innerHTML = `<span class="bad">generation failed:</span> ${e.message}`;
+    console.error(e);
+    $("run").disabled = false;
+    return;
+  }
+  const tEnd = performance.now();
+  const ttft = (tFirst - tStart) / 1000;
+  const genSeconds = (tEnd - tFirst) / 1000;
+  const tps = nTokens > 1 ? (nTokens - 1) / genSeconds : 0;
+  const wall = (tEnd - tStart) / 1000;
+
+  $("ttft").textContent = `${ttft.toFixed(2)} s`;
+  $("tps").textContent = `${tps.toFixed(1)} tok/s`;
+  $("ntok").textContent = String(nTokens);
+  $("wall").textContent = `${wall.toFixed(2)} s`;
+  $("stats").hidden = false;
+
+  lastResult = `LFM2.5-350M ${DTYPE.toUpperCase()} · ${adapterName} (WebGPU) · TTFT ${ttft.toFixed(2)} s · ${tps.toFixed(1)} tok/s · ${nTokens} tokens · ${browserLabel()}`;
+  $("copy").disabled = false;
+  $("run").disabled = false;
+
+  // First-guess thresholds; replaced by the Benchmarks thread after the first cohort.
+  const v = $("verdict");
+  if (tps >= 20) v.textContent = "Comfortable. Try the 1.2B model in Week 1.";
+  else if (tps >= 8) v.textContent = "Usable. 1.2B will be slow on this device; stay on 350M for the first weeks.";
+  else v.textContent = "Below the floor for the browser lane on this device. Post the number anyway, then read Step 7 (CPU lane).";
+}
+
+// ---- wiring ---------------------------------------------------------------
+$("load").addEventListener("click", loadModel);
+$("run").addEventListener("click", runBenchmark);
+$("copy").addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText(lastResult); $("copied").textContent = "copied"; }
+  catch { $("copied").textContent = lastResult; }
+});
+
+if (await checkGpu()) {
+  $("load").disabled = false;
+  $("loadlog").textContent = "ready to download";
+}
+</script>
+</body>
+</html>
